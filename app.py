@@ -3,155 +3,84 @@ import cv2
 import numpy as np
 from PIL import Image
 
-st.title("AI Nail Color Change")
+st.title("ネイルカラーチェンジャー 💅　dev")
 
 uploaded_file = st.file_uploader(
     "画像をアップロード",
     type=["jpg", "jpeg", "png"]
 )
 
-# カラーパレット
-colors = {
-    "Red": (0, 0, 255),
-    "Green": (0, 255, 0),
-    "Blue": (255, 0, 0),
-    "Pink": (255, 0, 255),
-    "Yellow": (0, 255, 255),
-    "White": (255, 255, 255),
-    "Black": (20, 20, 20),
-}
-
-selected_color = st.selectbox(
-    "ネイルカラーを選択",
-    list(colors.keys())
+color = st.color_picker(
+    "変えたい色を選んでください",
+    "#ff69b4"
 )
 
-if uploaded_file:
+if uploaded_file is not None:
 
-    image = Image.open(uploaded_file)
-    img = np.array(image)
-
-    # RGB → BGR
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    image = Image.open(uploaded_file).convert("RGB")
+    img_rgb = np.array(image)
+    img = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # =========================
-    # 爪っぽい領域検出
-    # =========================
+    # ===== ネイビー部分を検出 =====
+    lower_navy = np.array([90, 60, 20])
+    upper_navy = np.array([140, 255, 180])
+    navy_mask = cv2.inRange(hsv, lower_navy, upper_navy)
 
-    # 彩度高め
-    s = hsv[:, :, 1]
+    # ===== マスク調整 =====
+    nail_mask = navy_mask.copy()
 
-    # 明るさ
-    v = hsv[:, :, 2]
-
-    mask1 = cv2.inRange(s, 50, 255)
-    mask2 = cv2.inRange(v, 40, 255)
-
-    mask = cv2.bitwise_and(mask1, mask2)
-
-    # ノイズ除去
+    # 穴を埋める
     kernel = np.ones((5, 5), np.uint8)
+    nail_mask = cv2.morphologyEx(nail_mask, cv2.MORPH_CLOSE, kernel)
 
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        kernel
-    )
+    # 少し広げる
+    kernel = np.ones((5, 5), np.uint8)
+    nail_mask = cv2.dilate(nail_mask, kernel, iterations=1)
 
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        kernel
-    )
+    # 境界をなめらかに
+    nail_mask = cv2.GaussianBlur(nail_mask, (5, 5), 0)
 
-    # =========================
-    # 輪郭抽出
-    # =========================
+    # ===== 色変換 =====
+    hex_color = color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
 
-    contours, _ = cv2.findContours(
-        mask,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+    target_bgr = np.array([b, g, r], dtype=np.uint8)
 
-    nail_mask = np.zeros(mask.shape, dtype=np.uint8)
-
-    for cnt in contours:
-
-        area = cv2.contourArea(cnt)
-
-        # 小さすぎ除外
-        if area > 300:
-
-            x, y, w, h = cv2.boundingRect(cnt)
-
-            ratio = w / h
-
-            # 爪っぽい形
-            if 0.5 < ratio < 2.0:
-
-                cv2.drawContours(
-                    nail_mask,
-                    [cnt],
-                    -1,
-                    255,
-                    -1
-                )
-
-    # =========================
-    # 色変更
-    # =========================
-
-    target_bgr = colors[selected_color]
-
-    target = np.uint8([[target_bgr]])
     target_hsv = cv2.cvtColor(
-        target,
+        np.uint8([[target_bgr]]),
         cv2.COLOR_BGR2HSV
     )[0][0]
 
     result_hsv = hsv.copy()
-
     mask_norm = nail_mask / 255.0
 
-    # Hue変更
+    # 色相を変更
     result_hsv[:, :, 0] = (
         (1 - mask_norm) * result_hsv[:, :, 0]
         + mask_norm * target_hsv[0]
     )
 
-    # 彩度少し強める
+    # 彩度を少し上げる
     result_hsv[:, :, 1] = np.clip(
-        result_hsv[:, :, 1] * (1 + 0.3 * mask_norm),
+        result_hsv[:, :, 1] * (1 + 0.25 * mask_norm),
         0,
         255
     )
 
     result_hsv = result_hsv.astype(np.uint8)
+    result = cv2.cvtColor(result_hsv, cv2.COLOR_HSV2BGR)
 
-    result = cv2.cvtColor(
-        result_hsv,
-        cv2.COLOR_HSV2BGR
-    )
+    # 元画像を少し混ぜてツヤを残す
+    result = cv2.addWeighted(result, 0.9, img, 0.1, 0)
 
-    # 元画像少し混ぜる
-    result = cv2.addWeighted(
-        result,
-        0.9,
-        img,
-        0.1,
-        0
-    )
+    result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
 
-    # 表示
-    st.image(
-        cv2.cvtColor(result, cv2.COLOR_BGR2RGB),
-        caption="Result"
-    )
+    st.subheader("完成イメージ")
+    st.image(result_rgb, use_container_width=True)
 
-    st.image(
-        nail_mask,
-        caption="AI Nail Mask"
-    )
+    with st.expander("マスク確認"):
+        st.image(nail_mask, caption="ネイル検出マスク", use_container_width=True)
