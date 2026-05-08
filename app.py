@@ -32,7 +32,7 @@ def change_french_white(img_rgb, target_hex):
 
     # 白っぽい部分を検出
     lower_white = np.array([0, 0, 150])
-　　upper_white = np.array([180, 90, 255])
+    upper_white = np.array([180, 90, 255])
     white_mask = cv2.inRange(hsv, lower_white, upper_white)
 
     # フレンチ先端っぽい白だけ残す
@@ -58,7 +58,7 @@ def change_french_white(img_rgb, target_hex):
             continue
 
         if h > 120:
-    　　　　continue
+    　　    continue
 
         ratio = w / h
 
