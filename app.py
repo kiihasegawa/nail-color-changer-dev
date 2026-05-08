@@ -47,17 +47,22 @@ def change_french_white(img_rgb, target_hex):
     for cnt in contours:
         area = cv2.contourArea(cnt)
 
+        # 小さすぎるノイズ除外
         if area < 120:
             continue
 
         x, y, w, h = cv2.boundingRect(cnt)
+
+        # 画像の下側にある白っぽい部分は除外
+        if y > image.shape[0] * 0.6:
+            continue
 
         if h == 0:
             continue
 
         ratio = w / h
 
-        # 横長〜四角っぽい白だけ
+        # フレンチ先端は横長〜四角っぽい
         if ratio < 0.8 or ratio > 5.0:
             continue
 
@@ -67,10 +72,12 @@ def change_french_white(img_rgb, target_hex):
 
         cv2.drawContours(tip_mask, [cnt], -1, 255, -1)
 
+    # マスク調整
     kernel = np.ones((5, 5), np.uint8)
     tip_mask = cv2.morphologyEx(tip_mask, cv2.MORPH_CLOSE, kernel)
     tip_mask = cv2.GaussianBlur(tip_mask, (5, 5), 0)
 
+    # 変更後カラー
     target_bgr = hex_to_bgr(target_hex)
 
     target_hsv = cv2.cvtColor(
@@ -78,16 +85,15 @@ def change_french_white(img_rgb, target_hex):
         cv2.COLOR_BGR2HSV
     )[0][0]
 
+    # 色変更
     result_hsv = hsv.copy()
     mask_norm = tip_mask / 255.0
 
-    # 色相変更
     result_hsv[:, :, 0] = (
         (1 - mask_norm) * result_hsv[:, :, 0]
         + mask_norm * target_hsv[0]
     )
 
-    # 彩度変更
     result_hsv[:, :, 1] = (
         (1 - mask_norm) * result_hsv[:, :, 1]
         + mask_norm * target_hsv[1]
@@ -96,6 +102,7 @@ def change_french_white(img_rgb, target_hex):
     result_hsv = result_hsv.astype(np.uint8)
     result = cv2.cvtColor(result_hsv, cv2.COLOR_HSV2BGR)
 
+    # ツヤ保持
     result = cv2.addWeighted(result, 0.9, image, 0.1, 0)
 
     result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
