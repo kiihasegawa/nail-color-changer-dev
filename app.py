@@ -1,304 +1,12 @@
-import os
-import urllib.request
-
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
-st.set_page_config(page_title="French Nail AI", layout="centered")
+st.set_page_config(page_title="French Nail Color Changer", layout="centered")
 
-st.title("French Nail AI 💅")
-st.caption("白フレンチ部分だけ色変更するデモ")
-
-
-@st.cache_resource
-def load_sam():
-    checkpoint = "sam_vit_b_01ec64.pth"
-
-    if not os.path.exists(checkpoint):
-        st.write("SAMモデルをダウンロード中です。初回だけ数分かかります。")
-        urllib.request.urlretrieve(
-            "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
-            checkpoint
-        )
-
-    sam = sam_model_registry["vit_b"](checkpoint=checkpoint)
-
-    generator = SamAutomaticMaskGenerator(
-        sam,
-        points_per_side=16,
-        pred_iou_thresh=0.86,
-        stability_score_thresh=0.88,
-        min_mask_region_area=200
-    )
-
-    return generator
-
-
-def resize_for_sam(image_rgb, max_size=900):
-    h, w = image_rgb.shape[:2]
-    scale = max_size / max(h, w)
-
-    if scale >= 1:
-        return image_rgb, 1.0
-
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-
-    resized = cv2.resize(
-        image_rgb,
-        (new_w, new_h),
-        interpolation=cv2.INTER_AREA
-    )
-
-    return resized, scale
-
-
-def hex_to_bgr(hex_color):
-    rgb = tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
-    return np.array([rgb[2], rgb[1], rgb[0]], dtype=np.uint8)
-
-
-def change_french_color(image_rgb_original, target_bgr, mask_generator):
-    image_rgb, scale = resize_for_sam(image_rgb_original, max_size=900)
-
-    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-
-    masks = mask_generator.generate(image_rgb)
-
-    nail_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
-
-    for m in masks:
-        seg = m["segmentation"]
-        area = np.sum(seg)
-
-        if area < 300 or area > 18000:
-            continue
-
-        ys, xs = np.where(seg)
-
-        if len(xs) == 0:
-            continue
-
-        x_min, x_max = xs.min(), xs.max()
-        y_min, y_max = ys.min(), ys.max()
-
-        w = x_max - x_min + 1
-        h = y_max - y_min + 1
-
-        if h == 0:
-            continue
-
-        ratio = w / h
-        fill_ratio = area / (w * h)
-
-        if ratio < 0.30 or ratio > 3.2:
-            continue
-
-        if fill_ratio < 0.30:
-            continue
-
-        nail_mask[seg] = 255
-
-    kernel = np.ones((5, 5), np.uint8)
-
-    nail_mask = cv2.morphologyEx(
-        nail_mask,
-        cv2.MORPH_CLOSE,
-        kernel
-    )
-
-    nail_mask = cv2.erode(
-        nail_mask,
-        np.ones((3, 3), np.uint8),
-        iterations=1
-    )
-
-    lower_white = np.array([0, 0, 130], dtype=np.uint8)
-    upper_white = np.array([180, 130, 255], dtype=np.uint8)
-
-    white_mask = cv2.inRange(
-        hsv,
-        lower_white,
-        upper_white
-    )
-
-    white_mask = cv2.bitwise_and(
-        white_mask,
-        nail_mask
-    )
-
-    white_mask = cv2.morphologyEx(
-        white_mask,
-        cv2.MORPH_OPEN,
-        np.ones((3, 3), np.uint8)
-    )
-
-    white_mask = cv2.morphologyEx(
-        white_mask,
-        cv2.MORPH_CLOSE,
-        np.ones((5, 5), np.uint8)
-    )
-
-    white_mask = cv2.dilate(
-        white_mask,
-        np.ones((3, 3), np.uint8),
-        iterations=1
-    )
-
-    white_mask = cv2.bitwise_and(
-        white_mask,
-        nail_mask
-    )
-
-    target_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
-
-    for m in masks:
-        seg = m["segmentation"]
-
-        temp_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
-        temp_mask[seg] = 255
-
-        temp_mask = cv2.bitwise_and(temp_mask, nail_mask)
-        temp_mask = cv2.bitwise_and(temp_mask, white_mask)
-
-        area = np.sum(temp_mask > 0)
-
-        if area < 60 or area > 9000:
-            continue
-
-        ys, xs = np.where(temp_mask > 0)
-
-        if len(xs) == 0:
-            continue
-
-        x_min, x_max = xs.min(), xs.max()
-        y_min, y_max = ys.min(), ys.max()
-
-        w = x_max - x_min + 1
-        h = y_max - y_min + 1
-
-        if h == 0:
-            continue
-
-        ratio = w / h
-
-        if ratio < 0.5 or ratio > 7.0:
-            continue
-
-        if h > image_rgb.shape[0] * 0.22:
-            continue
-
-        target_mask = cv2.bitwise_or(
-            target_mask,
-            temp_mask
-        )
-
-    target_mask = cv2.morphologyEx(
-        target_mask,
-        cv2.MORPH_CLOSE,
-        np.ones((5, 5), np.uint8)
-    )
-
-    target_mask = cv2.dilate(
-        target_mask,
-        np.ones((3, 3), np.uint8),
-        iterations=1
-    )
-
-    target_mask = cv2.bitwise_and(
-        target_mask,
-        white_mask
-    )
-
-    target_mask = cv2.GaussianBlur(
-        target_mask,
-        (9, 9),
-        0
-    )
-
-    target_hsv = cv2.cvtColor(
-        np.uint8([[target_bgr]]),
-        cv2.COLOR_BGR2HSV
-    )[0][0]
-
-    result_hsv = hsv.copy()
-    mask_norm = target_mask / 255.0
-
-    color_strength = 0.85
-    saturation_strength = 0.75
-
-    result_hsv[:, :, 0] = (
-        (1 - mask_norm * color_strength)
-        * result_hsv[:, :, 0]
-        + (mask_norm * color_strength)
-        * target_hsv[0]
-    )
-
-    result_hsv[:, :, 1] = (
-        (1 - mask_norm * saturation_strength)
-        * result_hsv[:, :, 1]
-        + (mask_norm * saturation_strength)
-        * target_hsv[1]
-    )
-
-    result_hsv = result_hsv.astype(np.uint8)
-
-    result_bgr = cv2.cvtColor(
-        result_hsv,
-        cv2.COLOR_HSV2BGR
-    )
-
-    result_bgr = cv2.addWeighted(
-        result_bgr,
-        0.88,
-        image_bgr,
-        0.12,
-        0
-    )
-
-    result_rgb_small = cv2.cvtColor(
-        result_bgr,
-        cv2.COLOR_BGR2RGB
-    )
-
-    if scale != 1.0:
-        orig_h, orig_w = image_rgb_original.shape[:2]
-
-        result_rgb = cv2.resize(
-            result_rgb_small,
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        target_mask = cv2.resize(
-            target_mask,
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_NEAREST
-        )
-
-        white_mask = cv2.resize(
-            white_mask,
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_NEAREST
-        )
-
-        nail_mask = cv2.resize(
-            nail_mask,
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_NEAREST
-        )
-
-    else:
-        result_rgb = result_rgb_small
-
-    return result_rgb, target_mask, white_mask, nail_mask
-
-
-mask_generator = load_sam()
+st.title("French Nail Color Changer 💅")
+st.caption("軽量版：白フレンチ部分の色変更デモ")
 
 uploaded_file = st.file_uploader(
     "ネイル画像をアップロード",
@@ -310,45 +18,128 @@ target_color = st.color_picker(
     "#55bfff"
 )
 
+show_mask = st.checkbox("検出マスクを表示する", value=True)
+
+def hex_to_bgr(hex_color):
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return np.array([b, g, r], dtype=np.uint8)
+
+def change_french_color(image_rgb, target_hex):
+    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+
+    # 白フレンチ候補
+    lower_white = np.array([0, 0, 165], dtype=np.uint8)
+    upper_white = np.array([180, 75, 255], dtype=np.uint8)
+
+    mask = cv2.inRange(hsv, lower_white, upper_white)
+
+    # 画像上部の背景・ライト反射を少し除外
+    h, w = mask.shape
+    mask[: int(h * 0.15), :] = 0
+
+    # ノイズ除去・穴埋め
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        np.ones((3, 3), np.uint8)
+    )
+
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        np.ones((7, 7), np.uint8)
+    )
+
+    # 細長い反射や大きすぎる領域を除外
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask,
+        connectivity=8
+    )
+
+    clean_mask = np.zeros_like(mask)
+
+    for i in range(1, num_labels):
+        x, y, ww, hh, area = stats[i]
+
+        if area < 80:
+            continue
+
+        if area > image_rgb.shape[0] * image_rgb.shape[1] * 0.18:
+            continue
+
+        ratio = ww / hh if hh > 0 else 0
+        thin_ratio = max(ww, hh) / min(ww, hh) if min(ww, hh) > 0 else 999
+
+        # 極端に細長い反射を除外
+        if thin_ratio > 5.5:
+            continue
+
+        # フレンチ先端は横長〜やや四角寄りを想定
+        if ratio < 0.25 or ratio > 8.0:
+            continue
+
+        clean_mask[labels == i] = 255
+
+    clean_mask = cv2.dilate(
+        clean_mask,
+        np.ones((3, 3), np.uint8),
+        iterations=1
+    )
+
+    clean_mask = cv2.GaussianBlur(
+        clean_mask,
+        (9, 9),
+        0
+    )
+
+    target_bgr = hex_to_bgr(target_hex)
+
+    target_hsv = cv2.cvtColor(
+        np.uint8([[target_bgr]]),
+        cv2.COLOR_BGR2HSV
+    )[0][0]
+
+    result_hsv = hsv.copy()
+    mask_norm = clean_mask / 255.0
+
+    color_strength = 0.85
+    saturation_strength = 0.75
+
+    result_hsv[:, :, 0] = (
+        (1 - mask_norm * color_strength) * result_hsv[:, :, 0]
+        + (mask_norm * color_strength) * target_hsv[0]
+    )
+
+    result_hsv[:, :, 1] = (
+        (1 - mask_norm * saturation_strength) * result_hsv[:, :, 1]
+        + (mask_norm * saturation_strength) * target_hsv[1]
+    )
+
+    result_hsv = result_hsv.astype(np.uint8)
+    result_bgr = cv2.cvtColor(result_hsv, cv2.COLOR_HSV2BGR)
+
+    # ツヤを少し残す
+    result_bgr = cv2.addWeighted(result_bgr, 0.88, image_bgr, 0.12, 0)
+
+    result_rgb = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
+
+    return result_rgb, clean_mask
+
 if uploaded_file is not None:
     image_pil = Image.open(uploaded_file).convert("RGB")
     image_rgb = np.array(image_pil)
 
-    st.image(
-        image_rgb,
-        caption="元画像",
-        width="stretch"
-    )
+    st.image(image_rgb, caption="元画像", width="stretch")
 
     if st.button("フレンチ部分の色を変更する"):
-        with st.spinner("AI解析中です。少し待ってください..."):
-            result_rgb, target_mask, white_mask, nail_mask = change_french_color(
-                image_rgb,
-                hex_to_bgr(target_color),
-                mask_generator
-            )
+        with st.spinner("変換中です..."):
+            result_rgb, mask = change_french_color(image_rgb, target_color)
 
-        st.image(
-            result_rgb,
-            caption="変換結果",
-            width="stretch"
-        )
+        st.image(result_rgb, caption="変換結果", width="stretch")
 
-        with st.expander("検出マスクを確認"):
-            st.image(
-                target_mask,
-                caption="最終マスク",
-                width="stretch"
-            )
-
-            st.image(
-                white_mask,
-                caption="白候補マスク",
-                width="stretch"
-            )
-
-            st.image(
-                nail_mask,
-                caption="爪候補マスク",
-                width="stretch"
-            )
+        if show_mask:
+            st.image(mask, caption="検出マスク", width="stretch")
