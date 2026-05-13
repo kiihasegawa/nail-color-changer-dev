@@ -28,7 +28,7 @@ def load_sam():
 
     generator = SamAutomaticMaskGenerator(
         sam,
-        points_per_side=32,
+        points_per_side=16,
         pred_iou_thresh=0.86,
         stability_score_thresh=0.88,
         min_mask_region_area=200
@@ -37,25 +37,45 @@ def load_sam():
     return generator
 
 
+def resize_for_sam(image_rgb, max_size=900):
+    h, w = image_rgb.shape[:2]
+    scale = max_size / max(h, w)
+
+    if scale >= 1:
+        return image_rgb, 1.0
+
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    resized = cv2.resize(
+        image_rgb,
+        (new_w, new_h),
+        interpolation=cv2.INTER_AREA
+    )
+
+    return resized, scale
+
+
 def hex_to_bgr(hex_color):
     rgb = tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
     return np.array([rgb[2], rgb[1], rgb[0]], dtype=np.uint8)
 
 
-def change_french_color(image_rgb, target_bgr, mask_generator):
+def change_french_color(image_rgb_original, target_bgr, mask_generator):
+    image_rgb, scale = resize_for_sam(image_rgb_original, max_size=900)
+
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
 
     masks = mask_generator.generate(image_rgb)
 
-    # ===== 爪全体マスク =====
     nail_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
 
     for m in masks:
         seg = m["segmentation"]
         area = np.sum(seg)
 
-        if area < 500 or area > 25000:
+        if area < 300 or area > 18000:
             continue
 
         ys, xs = np.where(seg)
@@ -75,10 +95,10 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
         ratio = w / h
         fill_ratio = area / (w * h)
 
-        if ratio < 0.35 or ratio > 2.8:
+        if ratio < 0.30 or ratio > 3.2:
             continue
 
-        if fill_ratio < 0.35:
+        if fill_ratio < 0.30:
             continue
 
         nail_mask[seg] = 255
@@ -97,11 +117,14 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
         iterations=1
     )
 
-    # ===== 白候補 =====
     lower_white = np.array([0, 0, 130], dtype=np.uint8)
     upper_white = np.array([180, 130, 255], dtype=np.uint8)
 
-    white_mask = cv2.inRange(hsv, lower_white, upper_white)
+    white_mask = cv2.inRange(
+        hsv,
+        lower_white,
+        upper_white
+    )
 
     white_mask = cv2.bitwise_and(
         white_mask,
@@ -131,7 +154,6 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
         nail_mask
     )
 
-    # ===== SAM領域ごとに白フレンチっぽい部分を探す =====
     target_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
 
     for m in masks:
@@ -145,7 +167,7 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
 
         area = np.sum(temp_mask > 0)
 
-        if area < 100 or area > 12000:
+        if area < 60 or area > 9000:
             continue
 
         ys, xs = np.where(temp_mask > 0)
@@ -153,10 +175,8 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
         if len(xs) == 0:
             continue
 
-        y_min = ys.min()
-        y_max = ys.max()
-        x_min = xs.min()
-        x_max = xs.max()
+        x_min, x_max = xs.min(), xs.max()
+        y_min, y_max = ys.min(), ys.max()
 
         w = x_max - x_min + 1
         h = y_max - y_min + 1
@@ -166,10 +186,10 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
 
         ratio = w / h
 
-        if ratio < 0.6 or ratio > 6.0:
+        if ratio < 0.5 or ratio > 7.0:
             continue
 
-        if h > image_rgb.shape[0] * 0.18:
+        if h > image_rgb.shape[0] * 0.22:
             continue
 
         target_mask = cv2.bitwise_or(
@@ -177,7 +197,6 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
             temp_mask
         )
 
-    # ===== マスク補正 =====
     target_mask = cv2.morphologyEx(
         target_mask,
         cv2.MORPH_CLOSE,
@@ -201,7 +220,6 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
         0
     )
 
-    # ===== 色変更 =====
     target_hsv = cv2.cvtColor(
         np.uint8([[target_bgr]]),
         cv2.COLOR_BGR2HSV
@@ -242,10 +260,40 @@ def change_french_color(image_rgb, target_bgr, mask_generator):
         0
     )
 
-    result_rgb = cv2.cvtColor(
+    result_rgb_small = cv2.cvtColor(
         result_bgr,
         cv2.COLOR_BGR2RGB
     )
+
+    if scale != 1.0:
+        orig_h, orig_w = image_rgb_original.shape[:2]
+
+        result_rgb = cv2.resize(
+            result_rgb_small,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        target_mask = cv2.resize(
+            target_mask,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        white_mask = cv2.resize(
+            white_mask,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        nail_mask = cv2.resize(
+            nail_mask,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+    else:
+        result_rgb = result_rgb_small
 
     return result_rgb, target_mask, white_mask, nail_mask
 
