@@ -1,4 +1,7 @@
 streamlit
+opencv-python-headless
 numpy
 pillow
-opencv-python-headless
+torch
+torchvision
+git+https://github.com/facebookresearch/segment-anything.git
